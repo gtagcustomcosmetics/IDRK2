@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Monke Tag - Fan Game</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#9fd3f5;font-family:system-ui,sans-serif}
+canvas{display:block}
+#hud{position:fixed;top:10px;left:10px;color:#fff;text-shadow:0 1px 4px #000;font-size:15px;pointer-events:none;line-height:1.5}
+#state{font-size:24px;font-weight:700}
+#help{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#0008;color:#fff;text-align:center;font-size:17px;line-height:1.7;cursor:pointer}
+#help div{max-width:520px;padding:24px;background:#000a;border-radius:14px}
+#help b{color:#ffd54a}
+#cos{position:fixed;right:16px;top:16px;max-width:230px;padding:14px;border-radius:12px;background:#000b;font-size:14px;text-align:left;cursor:default;line-height:1.5}
+#cos button{margin:2px;padding:5px 8px;border:0;border-radius:6px;background:#fff3;color:#fff;cursor:pointer;font-size:13px}
+#cos button.on{background:#ffd54a;color:#000}
+#cos .sw{display:inline-block;width:22px;height:22px;border-radius:50%;margin:4px 3px;cursor:pointer;border:2px solid transparent}
+#cos .sw.on{border-color:#fff}
+#mp{position:fixed;left:16px;top:16px;max-width:230px;padding:14px;border-radius:12px;background:#000b;font-size:14px;text-align:left;cursor:default;line-height:1.7}
+#mp input{width:130px;padding:4px 6px;border-radius:6px;border:0;font-size:14px}
+#mp button{margin:3px 3px 3px 0;padding:5px 9px;border:0;border-radius:6px;background:#ffd54a;color:#000;cursor:pointer;font-size:13px}
+#mp #mpstat{color:#9fe3a0;font-size:13px}
+</style></head><body>
+<div id="hud"><div id="state"></div><div id="sub"></div></div>
+<div id="help"><div id="msg">Loading assets...</div></div>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script type="module">
+import * as THREE from 'three';
+import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
+import {clone} from 'three/addons/utils/SkeletonUtils.js';
+import {Reflector} from 'three/addons/objects/Reflector.js';
+import {VRButton} from 'three/addons/webxr/VRButton.js';
+
+const $=id=>document.getElementById(id), V=(x=0,y=0,z=0)=>new THREE.Vector3(x,y,z);
+const R=0.55, RH=0.1, GRAV=9.8, MAXV=12, SENS=0.005, LOOK=0.0025, PI=Math.PI;
+const FUR_MATCH=/fur/i; // name of the fur material in your .glb (if no material matches, the biggest mesh is tinted)
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);
+document.body.prepend(renderer.domElement);
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x9fd3f5);scene.fog=new THREE.Fog(0x9fd3f5,70,230);
+scene.add(new THREE.HemisphereLight(0xffffff,0x6a8a4a,1.2));
+const sun=new THREE.DirectionalLight(0xffffff,2.2);sun.position.set(50,100,30);scene.add(sun);
+const cam=new THREE.PerspectiveCamera(75,innerWidth/innerHeight,0.05,500);
+const rig=new THREE.Group();scene.add(rig);rig.add(cam);
+renderer.xr.enabled=true;document.body.appendChild(VRButton.createButton(renderer));
+addEventListener('resize',()=>{renderer.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()});
+
+// ---------- load assets ----------
+let mapGltf,playerGltf;
+try{
+  const L=new GLTFLoader();
+  [mapGltf,playerGltf]=await Promise.all([L.loadAsync('Empty_Rolling_Plain.glb'),L.loadAsync('Playermodel.glb')]);
+}catch(e){
+  $('msg').innerHTML='Could not load the .glb files.<br>Keep <b>Empty_Rolling_Plain.glb</b> and <b>Playermodel.glb</b> next to index.html, and open it through a web server (or GitHub Pages), not file://.';
+  throw e;
+}
+
+// ---------- map + heightfield ----------
+function groundTexture(){
+  const S=512,c=document.createElement('canvas');c.width=c.height=S;const x=c.getContext('2d');
+  x.fillStyle='#6a9a47';x.fillRect(0,0,S,S);
+  const rnd=(a,b)=>a+Math.random()*(b-a),wrap=f=>{for(const dx of[-S,0,S])for(const dy of[-S,0,S])f(dx,dy)};
+  for(let i=0;i<45;i++){const px=rnd(0,S),py=rnd(0,S),r=rnd(30,90),col=Math.random()<.5?'rgba(150,190,80,.10)':'rgba(40,90,40,.10)';
+    wrap((dx,dy)=>{x.fillStyle=col;x.beginPath();x.arc(px+dx,py+dy,r,0,7);x.fill()})}
+  for(let i=0;i<14000;i++){const px=rnd(0,S),py=rnd(0,S),l=rnd(3,9),a=rnd(-.5,.5)-1.57,h=rnd(75,115),li=rnd(28,52);
+    x.strokeStyle=`hsl(${h},50%,${li}%)`;x.lineWidth=rnd(.7,1.6);
+    wrap((dx,dy)=>{x.beginPath();x.moveTo(px+dx,py+dy);x.lineTo(px+dx+Math.cos(a)*l,py+dy+Math.sin(a)*l);x.stroke()})}
+  for(let i=0;i<300;i++){const px=rnd(0,S),py=rnd(0,S);x.fillStyle=Math.random()<.5?'rgba(255,240,150,.7)':'rgba(255,255,255,.6)';
+    wrap((dx,dy)=>x.fillRect(px+dx,py+dy,2,2))}
+  const t=new THREE.CanvasTexture(c);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.colorSpace=THREE.SRGBColorSpace;t.anisotropy=8;return t;
+}
+scene.add(mapGltf.scene);mapGltf.scene.updateMatrixWorld(true);
+let hf,N,minX,minZ,step;
+mapGltf.scene.traverse(o=>{if(!o.isMesh)return;
+  const g=o.geometry;g.computeVertexNormals();o.material.flatShading=false;o.material.needsUpdate=true;
+  const p=g.attributes.position,v=V(),pts=[],uv=new Float32Array(p.count*2);let mx=1e9,mz=1e9,Mx=-1e9;
+  for(let i=0;i<p.count;i++){v.fromBufferAttribute(p,i).applyMatrix4(o.matrixWorld);pts.push(v.x,v.y,v.z);uv[i*2]=v.x/8;uv[i*2+1]=v.z/8;mx=Math.min(mx,v.x);mz=Math.min(mz,v.z);Mx=Math.max(Mx,v.x)}
+  g.setAttribute('uv',new THREE.BufferAttribute(uv,2));o.material.map=groundTexture();o.material.color.set(0xffffff);o.material.needsUpdate=true;
+  N=Math.round(Math.sqrt(p.count));minX=mx;minZ=mz;step=(Mx-mx)/(N-1);hf=new Float32Array(N*N);
+  for(let i=0;i<pts.length;i+=3){const ix=Math.round((pts[i]-minX)/step),iz=Math.round((pts[i+2]-minZ)/step);hf[iz*N+ix]=pts[i+1]}
+});
+function hgt(x,z){
+  const fx=Math.min(Math.max((x-minX)/step,0),N-1.001),fz=Math.min(Math.max((z-minZ)/step,0),N-1.001);
+  const ix=fx|0,iz=fz|0,tx=fx-ix,tz=fz-iz,a=hf[iz*N+ix],b=hf[iz*N+ix+1],c=hf[(iz+1)*N+ix],d=hf[(iz+1)*N+ix+1];
+  return (a*(1-tx)+b*tx)*(1-tz)+(c*(1-tx)+d*tx)*tz;
+}
+
+// ---------- mirror (stands in front of the spawn point, facing it) ----------
+{
+  const mx=0,mz=-3.5,base=Math.min(hgt(mx-1.5,mz),hgt(mx,mz),hgt(mx+1.5,mz));
+  const mir=new Reflector(new THREE.PlaneGeometry(3,2.2),{clipBias:0.003,textureWidth:1024,textureHeight:768,color:0xdddddd});
+  mir.position.set(mx,base+1.4,mz);scene.add(mir);
+  const fr=new THREE.Mesh(new THREE.BoxGeometry(3.3,2.9,0.12),new THREE.MeshStandardMaterial({color:0x5a3a1e,roughness:0.8}));
+  fr.position.set(mx,base+1.15,mz-0.07);scene.add(fr);
+}
+// ---------- gorilla rig (arm bones aimed at a target direction) ----------
+function makeGorilla(){
+  const group=new THREE.Group(),model=clone(playerGltf.scene);group.add(model);scene.add(group);
+  const rig={upper:[],lower:[],wrist:[],sh:[],len:[],lu:[],ll:[]};
+  const meshes=[];
+  model.traverse(o=>{if(o.isMesh||o.isSkinnedMesh){o.frustumCulled=false;o.material=o.material.clone();meshes.push(o)}
+    const n=o.name.replace(/[\s_]/g,'');
+    if(n.startsWith('UpperArmL'))rig.upper[0]=o;if(n.startsWith('UpperArmR'))rig.upper[1]=o;
+    if(o.isBone&&/^Head/.test(n))rig.head=o;
+    if(n.startsWith('LowerArmL'))rig.lower[0]=o;if(n.startsWith('LowerArmR'))rig.lower[1]=o;
+    if(n.startsWith('WristL'))rig.wrist[0]=o;if(n.startsWith('WristR'))rig.wrist[1]=o;});
+  group.updateMatrixWorld(true);
+  for(let k=0;k<2;k++){const s=rig.upper[k].getWorldPosition(V()),w=rig.wrist[k].getWorldPosition(V());rig.sh[k]=s;rig.len[k]=s.distanceTo(w);const l=rig.lower[k].getWorldPosition(V());rig.lu[k]=s.distanceTo(l);rig.ll[k]=l.distanceTo(w)}
+  let fm=meshes.filter(o=>FUR_MATCH.test(o.material.name));
+  if(!fm.length)fm=[meshes.reduce((a,b)=>b.geometry.attributes.position.count>a.geometry.attributes.position.count?b:a)];
+  return {group,rig,furMats:fm.map(o=>o.material),fur:0xffffff};
+}
+const _S=V(),_W=V(),_C=V(),_D=V(),_q=new THREE.Quaternion(),_Qw=new THREE.Quaternion(),_Pq=new THREE.Quaternion();
+// arm direction in gorilla-local space: a = swing forward(+)/back(-), b = swing outward
+function armDir(k,a,b,out){const s=k?-1:1;return out.set(s*Math.sin(b)*Math.cos(a),-Math.cos(b)*Math.cos(a),Math.sin(a)).normalize()}
+function armOffset(g,k,a,b,out){return out.copy(armDir(k,a,b,_D)).multiplyScalar(g.rig.len[k]).add(g.rig.sh[k])}
+function aim(g,k,a,b){
+  const up=g.rig.upper[k];g.group.updateMatrixWorld(true);
+  up.getWorldPosition(_S);g.rig.wrist[k].getWorldPosition(_W);_C.subVectors(_W,_S).normalize();
+  armDir(k,a,b,_D).applyQuaternion(g.group.quaternion);
+  _q.setFromUnitVectors(_C,_D);up.getWorldQuaternion(_Qw);up.parent.getWorldQuaternion(_Pq);
+  up.quaternion.copy(_Pq.invert().multiply(_q.multiply(_Qw)));
+}
+
+const _eu=new THREE.Euler();
+function aimAt(g,k,tp){
+  const up=g.rig.upper[k];up.scale.set(1,1,1);g.group.updateMatrixWorld(true);
+  up.getWorldPosition(_S);g.rig.wrist[k].getWorldPosition(_W);_C.subVectors(_W,_S).normalize();
+  _D.subVectors(tp,_S);const d=_D.length();_D.normalize();
+  _q.setFromUnitVectors(_C,_D);up.getWorldQuaternion(_Qw);up.parent.getWorldQuaternion(_Pq);
+  up.quaternion.copy(_Pq.invert().multiply(_q.multiply(_Qw)));
+  up.scale.y=Math.min(1.7,Math.max(0.6,d/g.rig.len[k]));
+}
+// 2-bone IK: shoulder -> elbow -> wrist reaches T, elbow bends toward `pole`; arm stretches a bit if T is too far
+const _u=V(),_ep=V(),_roll=new THREE.Quaternion(),_wq=new THREE.Quaternion();
+function aimBone(b,c,tp){
+  b.updateWorldMatrix(true,true);b.getWorldPosition(_S);c.getWorldPosition(_W);
+  _C.subVectors(_W,_S).normalize();_D.subVectors(tp,_S).normalize();
+  _q.setFromUnitVectors(_C,_D);b.getWorldQuaternion(_Qw);b.parent.getWorldQuaternion(_Pq);
+  b.quaternion.copy(_Pq.invert().multiply(_q.multiply(_Qw)));
+}
+function ik(g,k,T,pole){
+  const r=g.rig,U=r.upper[k];U.scale.set(1,1,1);g.group.updateMatrixWorld(true);
+  const S=U.getWorldPosition(V()),d=S.distanceTo(T),f=Math.min(1.7,Math.max(1,d/(r.lu[k]+r.ll[k]))),a=r.lu[k]*f,b=r.ll[k]*f;
+  const dd=Math.min(Math.max(d,Math.abs(a-b)+1e-3),a+b-1e-3);
+  _u.subVectors(T,S).normalize();
+  const x=(a*a-b*b+dd*dd)/(2*dd),hh=Math.sqrt(Math.max(0,a*a-x*x));
+  _ep.copy(pole).addScaledVector(_u,-pole.dot(_u));if(_ep.lengthSq()<1e-6)_ep.set(0,-1,0);_ep.normalize();
+  const E=S.clone().addScaledVector(_u,x).addScaledVector(_ep,hh);
+  U.scale.set(1,f,1);aimBone(U,r.lower[k],E);aimBone(r.lower[k],r.wrist[k],T);
+}
+// hand/wrist rotation follows the controller (tune HAND_TILT / HAND_ROLL if the hands look rotated wrong)
+const HAND_TILT=-0.5,HAND_ROLL=0;
+const qAl=new THREE.Quaternion().setFromUnitVectors(V(0,1,0),V(0,0,-1)),qTl=new THREE.Quaternion().setFromAxisAngle(V(1,0,0),HAND_TILT);
+function handRot(g,k,cq){
+  const wr=g.rig.wrist[k];
+  _wq.copy(cq).multiply(qTl).multiply(qAl).multiply(_roll.setFromAxisAngle(V(0,1,0),k?-HAND_ROLL:HAND_ROLL));
+  wr.parent.getWorldQuaternion(_Pq);wr.quaternion.copy(_Pq.invert().multiply(_wq));
+}
+// ---------- player ----------
+const P={g:makeGorilla(),pos:V(),vel:V(),yaw:0,pitch:0,a:[0,0],b:[.15,.15],prev:[V(),V()],touch:[false,false],hist:[],third:false,was:false};
+function reset(){P.pos.set(0,0,0);P.pos.y=hgt(0,0)+R+0.2;P.vel.set(0,0,0);P.hist=[];
+  for(let k=0;k<2;k++)armOffset(P.g,k,P.a[k],P.b[k],P.prev[k])}
+reset();
+
+// ---------- cosmetics: hats (procedural, attached to the head bone) ----------
+const COLS=[0xc0392b,0x2980b9,0x27ae60,0xf1c40f,0x8e44ad,0xf2f2f2,0x2b2b2b,0xe67e22];
+const MT=(c,r=0.7)=>new THREE.MeshStandardMaterial({color:c,roughness:r,side:THREE.DoubleSide});
+const cyl=(a,b,h,m,seg=24,open=false)=>new THREE.Mesh(new THREE.CylinderGeometry(a,b,h,seg,1,open),m);
+const ball=(r,m)=>new THREE.Mesh(new THREE.SphereGeometry(r,16,12),m);
+const dome=(r,m)=>new THREE.Mesh(new THREE.SphereGeometry(r,20,12,0,PI*2,0,PI/2),m);
+const at=(o,x,y,z)=>{o.position.set(x,y,z);return o};
+const hatDefs=[
+ ['None',null],
+ ['Top Hat',m=>{const g=new THREE.Group();g.add(at(cyl(.115,.115,.2,m),0,.1,0),at(cyl(.19,.19,.015,m),0,.008,0),at(cyl(.118,.118,.04,MT(0x111111)),0,.04,0));return g}],
+ ['Cowboy',m=>{const g=new THREE.Group();g.add(at(cyl(.27,.27,.012,m),0,.006,0),at(cyl(.08,.115,.14,m),0,.08,0),at(cyl(.117,.117,.025,MT(0x5a3a1e)),0,.03,0));return g}],
+ ['Beanie',m=>{const g=new THREE.Group();g.add(at(dome(.15,m),0,-.02,0),at(cyl(.152,.152,.035,MT(0xffffff)),0,-.01,0),at(ball(.04,MT(0xffffff)),0,.13,0));return g}],
+ ['Party',m=>{const g=new THREE.Group();g.add(at(new THREE.Mesh(new THREE.ConeGeometry(.11,.3,20),m),0,.15,0),at(ball(.03,MT(0xf1c40f)),0,.31,0));return g}],
+ ['Crown',m=>{const g=new THREE.Group();g.add(at(cyl(.13,.13,.07,m,24,true),0,.035,0));
+   for(let i=0;i<6;i++){const a=i/6*PI*2;g.add(at(new THREE.Mesh(new THREE.ConeGeometry(.025,.07,8),m),Math.cos(a)*.13,.1,Math.sin(a)*.13))}return g}],
+ ['Propeller',m=>{const g=new THREE.Group(),sp=new THREE.Group();
+   sp.add(new THREE.Mesh(new THREE.BoxGeometry(.24,.004,.035),MT(0xc0392b)),new THREE.Mesh(new THREE.BoxGeometry(.035,.004,.24),MT(0x2980b9)));
+   g.add(at(dome(.14,m),0,-.01,0),at(cyl(.008,.008,.04,MT(0x333333)),0,.14,0),at(sp,0,.165,0));g.userData.spin=sp;return g}],
+ ['Wizard',m=>{const g=new THREE.Group();g.add(at(cyl(.24,.24,.01,m),0,.005,0),at(new THREE.Mesh(new THREE.ConeGeometry(.14,.45,24),m),0,.235,0),at(cyl(.141,.141,.03,MT(0xf1c40f)),0,.03,0));return g}],
+ ['Santa',m=>{const g=new THREE.Group(),t=new THREE.Group();t.rotation.x=-.45;
+   t.add(at(new THREE.Mesh(new THREE.ConeGeometry(.13,.3,20),m),0,.15,0),at(ball(.035,MT(0xffffff)),0,.3,0));
+   g.add(t,at(cyl(.14,.14,.045,MT(0xffffff)),0,.01,0));return g}],
+ ['Cat Ears',m=>{const g=new THREE.Group();for(const sx of[-1,1]){const e=at(new THREE.Mesh(new THREE.ConeGeometry(.05,.11,4),m),sx*.09,.04,0);e.rotation.z=-sx*.25;
+   const i=at(new THREE.Mesh(new THREE.ConeGeometry(.028,.07,4),MT(0xffb3c6)),sx*.09,.035,.012);i.rotation.z=-sx*.25;g.add(e,i)}return g}]
+];
+function setHat(g,hi,ci){
+  if(g.hatObj){g.rig.head.remove(g.hatObj);g.hatObj=null;g.spin=null}
+  if(hatDefs[hi]&&hatDefs[hi][1]){g.hatObj=hatDefs[hi][1](MT(COLS[ci]));g.spin=g.hatObj.userData.spin||null;at(g.hatObj,0,0.285,0.03);g.rig.head.add(g.hatObj)}
+}
+function setFur(g,v){g.fur=v;if(v>=0)g.furMats.forEach(m=>m.color.setHex(v))}
+function rainbow(g,t){g.furMats.forEach(m=>m.color.setHSL((t*0.12)%1,0.85,0.55))}
+function furTick(t){if(P.g.fur===-1)rainbow(P.g,t);remotes.forEach(r=>{if(r.g.fur===-1)rainbow(r.g,t)})}
+const cos={hat:0,col:0,fur:0xffffff};let net=null;
+try{const sv=JSON.parse(localStorage.getItem('monkeCos')||'{}');if(sv.hat>=0&&sv.hat<hatDefs.length)cos.hat=sv.hat|0;if(sv.col>=0&&sv.col<COLS.length)cos.col=sv.col|0;if(typeof sv.fur==='number')cos.fur=sv.fur}catch(e){}
+const cosEl=document.createElement('div');cosEl.id='cos';
+cosEl.innerHTML='<b>Wardrobe</b><div id="hl"></div><div id="cl"></div><b>Fur color</b><div id="fl"></div><small>In game: <b>H</b> hat, <b>C</b> hat color, <b>F</b> fur color.<br>Check yourself in the mirror!<br>Click outside this box to play.</small>';
+$('help').appendChild(cosEl);['click','mousedown'].forEach(ev=>cosEl.addEventListener(ev,e=>e.stopPropagation()));
+hatDefs.forEach((h,i)=>{const b=document.createElement('button');b.textContent=h[0];b.onclick=()=>{cos.hat=i;wearHat()};$('hl').appendChild(b)});
+COLS.forEach((c,i)=>{const d=document.createElement('span');d.className='sw';d.style.background='#'+c.toString(16).padStart(6,'0');d.onclick=()=>{cos.col=i;wearHat()};$('cl').appendChild(d)});
+const FURS=[0xffffff,0xe8742a,0xd62f2f,0xff7eb6,0x9b59b6,0x3b7ddd,0x25c4e8,0x2ecc71,0xb6e63a,0xf6d32d,0x8a5a2b,0x2b2b2b,-1];
+FURS.forEach(v=>{const d=document.createElement('span');d.className='sw';d.dataset.v=v;d.title=v===0xffffff?'Original':v<0?'Rainbow':'';
+  d.style.background=v<0?'conic-gradient(red,yellow,lime,cyan,blue,magenta,red)':'#'+v.toString(16).padStart(6,'0');d.onclick=()=>{cos.fur=v;wearHat()};$('fl').appendChild(d)});
+const fp=document.createElement('input');fp.type='color';fp.value='#ff8800';fp.title='Custom fur color';fp.style.cssText='width:30px;height:26px;border:0;padding:0;vertical-align:middle;background:none';
+fp.oninput=()=>{cos.fur=parseInt(fp.value.slice(1),16);wearHat()};$('fl').appendChild(fp);
+function wearHat(){
+  setHat(P.g,cos.hat,cos.col);setFur(P.g,cos.fur);netSend({t:'c',hat:cos.hat,col:cos.col,fur:cos.fur});
+  [...$('hl').children].forEach((b,i)=>b.classList.toggle('on',i===cos.hat));
+  [...$('cl').children].forEach((d,i)=>d.classList.toggle('on',i===cos.col));
+  [...$('fl').children].forEach(d=>{if(d.dataset.v!==undefined)d.classList.toggle('on',+d.dataset.v===cos.fur)});
+  try{localStorage.setItem('monkeCos',JSON.stringify(cos))}catch(e){}
+}
+const cycleFur=()=>{cos.fur=FURS[(FURS.indexOf(cos.fur)+1)%FURS.length];wearHat()};
+const cycleHat=d=>{cos.hat=(cos.hat+d+hatDefs.length)%hatDefs.length;wearHat()},cycleCol=d=>{cos.col=(cos.col+d+COLS.length)%COLS.length;wearHat()};
+wearHat();
+
+// ---------- multiplayer: ONE public lobby, WebRTC peer-to-peer via PeerJS ----------
+const MAX_PLAYERS=4,PEEROPTS={},HOST_ID='lokeworks-monkegame-public-lobby';
+const remotes=new Map(),alias=new Map(),_tv=V();let netT=0;
+const key_=id=>alias.get(id)||id,fl=a=>a.map(v=>Math.round(v*100)/100);
+const mpEl=document.createElement('div');mpEl.id='mp';
+mpEl.innerHTML='<b>Public lobby</b><br>Your name <input id="mpname" maxlength="14"><div id="mpstat">Connecting...</div><small>Everyone plays in one public lobby (up to 4 players). Your name shows above your head.</small>';
+$('help').appendChild(mpEl);['click','mousedown'].forEach(ev=>mpEl.addEventListener(ev,e=>e.stopPropagation()));
+try{$('mpname').value=localStorage.getItem('monkeName')||''}catch(e){}
+if(!$('mpname').value)$('mpname').value='Monke'+(100+Math.floor(Math.random()*900));
+const setStat=t=>$('mpstat').textContent=t,myName=()=>($('mpname').value||'Monke').trim().slice(0,14)||'Monke';
+const updCount=()=>{if(net)setStat(`Public lobby: ${remotes.size+1}/${MAX_PLAYERS} players online`)};
+function mkTag(txt){
+  const c=document.createElement('canvas');c.width=256;c.height=64;const x=c.getContext('2d');
+  x.fillStyle='#0009';x.fillRect(0,8,256,48);x.fillStyle='#fff';x.font='bold 34px sans-serif';x.textAlign='center';x.fillText(txt,128,45);
+  const sp=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c),depthTest:false}));sp.scale.set(.8,.2,1);sp.renderOrder=5;sp.position.set(0,1.05,0);return sp;
+}
+P.tag=mkTag(myName());P.g.group.add(P.tag);
+$('mpname').addEventListener('input',()=>{P.g.group.remove(P.tag);P.tag=mkTag(myName());P.g.group.add(P.tag);
+  try{localStorage.setItem('monkeName',myName())}catch(e){}netSend({t:'n',name:myName()})});
+function addRemote(id,name,hat,col,fur){
+  let r=remotes.get(id);
+  if(!r){const g=makeGorilla();r={g,tag:null,pos:V(),ry:0,h:[V(),V()],tp:null,name:'',last:performance.now()};remotes.set(id,r);name=name||'Monke';updCount()}
+  if(name&&name!==r.name){if(r.tag)r.g.group.remove(r.tag);r.tag=mkTag(name);r.g.group.add(r.tag);r.name=name}
+  if(hat!==undefined)setHat(r.g,hat,col);
+  if(fur!==undefined)setFur(r.g,fur);
+  return r;
+}
+function dropRemote(id){const r=remotes.get(id);if(!r)return;scene.remove(r.g.group);remotes.delete(id);updCount()}
+function netSend(m){if(net)net.conns.forEach(c=>{if(c.open)c.send(m)})}
+function onData(id0,d){
+  if(!d)return;if(d.t==='hi'&&d.id&&d.id!==id0)alias.set(id0,d.id);const id=key_(id0);const rr=remotes.get(id);if(rr)rr.last=performance.now();
+  if(d.t==='hi'){addRemote(id,d.name,d.hat,d.col,d.fur).seq=d.seq===undefined?9999:d.seq}
+  else if(d.t==='q'){const r=remotes.get(id);if(r)r.seq=d.seq}
+  else if(d.t==='c')addRemote(id,undefined,d.hat,d.col,d.fur);
+  else if(d.t==='n')addRemote(id,d.name);
+  else if(d.t==='host'){if(net)net.hostKnown=true}
+  else if(d.t==='full'&&net&&!net.host){const p=net.peer;net=null;try{p.destroy()}catch(e){}[...remotes.keys()].forEach(dropRemote);
+    setStat(`Lobby is full (${MAX_PLAYERS}/${MAX_PLAYERS}). Waiting for a free spot...`);setTimeout(joinLobby,5000)}
+  else if(d.t==='s'){const r=addRemote(id);if(!r.tp){r.pos.set(d.p[0],d.p[1],d.p[2]);r.ry=d.r;r.h[0].set(d.h[0],d.h[1],d.h[2]);r.h[1].set(d.h[3],d.h[4],d.h[5])}r.tp=d}
+  else if(d.t==='peers'&&net){if(d.seq!==undefined&&net.seq===9999){net.seq=d.seq;netSend({t:'q',seq:d.seq})}d.ids.forEach(connectTo)}
+}
+function wire(c){
+  const id=c.peer;const old=net.conns.get(id);if(old&&old!==c){try{old.close()}catch(e){}}net.conns.set(id,c);
+  c.on('open',()=>{
+    if(net&&net.host&&[...net.conns.values()].filter(x=>x.open&&x!==c).length+1>=MAX_PLAYERS){   // lobby full: turn the newcomer away
+      c.rejected=true;if(net.conns.get(id)===c)net.conns.delete(id);c.send({t:'full'});setTimeout(()=>{try{c.close()}catch(e){}},500);return}
+    c.send({t:'hi',id:net.peer.id,seq:net.seq,name:myName(),hat:cos.hat,col:cos.col,fur:cos.fur});
+    if(net&&net.host)c.send({t:'peers',seq:net.n++,ids:[...net.conns.keys()].filter(k=>k!==id&&net.conns.get(k).open)})});
+  c.on('data',d=>{if(!c.rejected)onData(id,d)});
+  c.on('close',()=>{
+    if(net&&net.conns.get(id)===c)net.conns.delete(id);
+    if(!net||![...net.conns.keys()].some(k=>key_(k)===key_(id)))dropRemote(key_(id));
+    if(net&&!net.host&&id===HOST_ID)claimHost();
+  });
+  c.on('error',()=>{});
+}
+function connectTo(id){if(!net||id===net.peer.id||net.conns.has(id))return;wire(net.peer.connect(id,{reliable:true}))}
+// if the lobby host leaves, the player who joined next (lowest join number) takes over the lobby so new people can still join
+function claimHost(){
+  const hk=key_(HOST_ID),rank=[...remotes].filter(([k,r])=>k!==hk&&(r.seq===undefined?9999:r.seq)<net.seq).length;
+  net.hostKnown=false;
+  setTimeout(()=>{
+    if(!net||net.host||net.hostKnown||net.conns.has(HOST_ID))return;
+    const hp=new Peer(HOST_ID,PEEROPTS);
+    hp.on('open',()=>{if(!net){hp.destroy();return}net.host=true;net.hostPeer=hp;
+      net.n=Math.max(net.seq,...[...remotes.values()].map(r=>r.seq===undefined||r.seq===9999?0:r.seq))+1;hp.on('connection',wire);updCount();netSend({t:'host'})});
+    hp.on('error',e=>{if(e.type==='unavailable-id'){hp.destroy();setTimeout(()=>{if(net&&!net.host&&!net.hostKnown)connectTo(HOST_ID)},1500)}});
+  },rank===0?300:1500+rank*1500);
+}
+function joinLobby(){
+  if(!window.Peer){setStat('Multiplayer library failed to load');return}
+  setStat('Connecting...');
+  const p=new Peer(HOST_ID,PEEROPTS);
+  p.on('open',()=>{net={peer:p,conns:new Map(),host:true,seq:0,n:1};p.on('connection',wire);updCount()});
+  p.on('error',e=>{
+    if(e.type==='unavailable-id'){
+      p.destroy();const g=new Peer(undefined,PEEROPTS);
+      g.on('open',()=>{net={peer:g,conns:new Map(),host:false,seq:9999,n:0};g.on('connection',wire);connectTo(HOST_ID);updCount()});
+      g.on('error',e2=>{
+        if(e2.type==='peer-unavailable'){g.destroy();net=null;setStat('Looking for the lobby...');setTimeout(joinLobby,2000+Math.random()*2000)}
+        else setStat('Network error: '+e2.type)});
+    }else setStat('Network error: '+e.type);
+  });
+}
+function stepRemotes(dt){
+  const k=Math.min(1,12*dt);
+  remotes.forEach(r=>{const d=r.tp;if(!d)return;
+    r.pos.lerp(_tv.set(d.p[0],d.p[1],d.p[2]),k);r.ry+=Math.atan2(Math.sin(d.r-r.ry),Math.cos(d.r-r.ry))*k;
+    r.g.group.position.copy(r.pos);r.g.group.rotation.y=r.ry;r.g.group.updateMatrixWorld(true);
+    const yaw=r.ry-PI;_fw.set(-Math.sin(yaw),0,-Math.cos(yaw));_rt.set(Math.cos(yaw),0,-Math.sin(yaw));
+    for(let i=0;i<2;i++){r.h[i].lerp(_tv.set(d.h[i*3],d.h[i*3+1],d.h[i*3+2]),k);
+      _pole.set(0,-.6,0).addScaledVector(_rt,i?.6:-.6).addScaledVector(_fw,-.5);ik(r.g,i,r.h[i],_pole)}
+    if(r.g.spin)r.g.spin.rotation.y+=dt*25});
+}
+function netTick(dt){
+  if(!net)return;
+  const now=performance.now();   // drop players who went silent (closed tab, lost connection) after 8 seconds
+  remotes.forEach((r,id)=>{if(now-r.last>8000){net.conns.forEach((c,k)=>{if(key_(k)===id){try{c.close()}catch(e){}net.conns.delete(k);if(k===HOST_ID&&!net.host)claimHost()}});dropRemote(id)}});
+  netT-=dt;if(netT>0||!net.conns.size)return;netT=1/15;
+  const g=P.g.group,a=P.g.rig.wrist[0].getWorldPosition(V()),b=P.g.rig.wrist[1].getWorldPosition(V());
+  netSend({t:'s',p:fl([g.position.x,g.position.y,g.position.z]),r:Math.round(g.rotation.y*100)/100,h:fl([a.x,a.y,a.z,b.x,b.y,b.z])});
+}
+joinLobby();
+
+// ---------- input ----------
+const key={},btn={0:false,2:false};let locked=false,msgShown=false;
+addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;key[e.code]=true;if(e.code==='KeyV'||e.code==='KeyP')P.third=!P.third;if(e.code==='KeyH')cycleHat(1);if(e.code==='KeyC')cycleCol(1);if(e.code==='KeyF')cycleFur();if(e.code.startsWith('Arrow'))e.preventDefault();if(e.code==='KeyR')reset()});
+addEventListener('keyup',e=>key[e.code]=false);
+addEventListener('contextmenu',e=>e.preventDefault());
+addEventListener('mousedown',e=>{btn[e.button]=true;if(!locked)renderer.domElement.requestPointerLock()});
+addEventListener('mouseup',e=>btn[e.button]=false);
+$('help').addEventListener('click',()=>renderer.domElement.requestPointerLock());
+document.addEventListener('pointerlockchange',()=>{locked=document.pointerLockElement===renderer.domElement;$('help').style.display=locked?'none':'flex'});
+$('msg').innerHTML='<b>MONKE TAG</b> (fan game)<br>Click to play. Move the mouse to look. Use <b>WASD</b> to walk around. A mirror stands in front of you.<br>Hold <b>Left Click / Q</b> = control LEFT arm<br>Hold <b>Right Click / E</b> = control RIGHT arm (hold both for both)<br>While holding, move the mouse to swing the arm.<br>Plant your hands on the ground and <b>pull back</b> to launch yourself!<br><b>VR:</b> open this page in your headset browser (Quest etc.) and tap <b>ENTER VR</b>. You are the gorilla: your head is its head and your controllers move its arms: push off the ground and pull back to launch! Right A/B respawns, <b>click right thumbstick</b> = third person, <b>click left thumbstick</b> = next hat, left X = hat color, left Y = fur color.<br><b>Keyboard:</b> <b>WASD</b> = move, mouse = look. Hold Q/E, then use the <b>arrow keys</b> to swing that arm (arrows alone = look).<br><b>P</b> (or V) = third person, <b>R</b> = reset';
+addEventListener('mousemove',e=>{
+  if(!locked)return;
+  const act=[btn[0]||key.KeyQ,btn[2]||key.KeyE];
+  if(!act[0]&&!act[1]){P.yaw-=e.movementX*LOOK;P.pitch=Math.max(-1.4,Math.min(1.4,P.pitch-e.movementY*LOOK));return}
+  for(let k=0;k<2;k++)if(act[k]){
+    P.a[k]=Math.max(-1.4,Math.min(1.6,P.a[k]-e.movementY*SENS));
+    P.b[k]=Math.max(-0.3,Math.min(1.5,P.b[k]+e.movementX*SENS*(k?1:-1)));
+  }
+});
+
+// ---------- simulation ----------
+const _o=V(),_p=V(),_dl=V(),disp=V(),gq=new THREE.Quaternion();
+function stepPlayer(dt){
+  const act=[btn[0]||key.KeyQ,btn[2]||key.KeyE];
+  // Desktop walking controls: WASD moves relative to the direction you're looking.
+  const forward=(key.KeyW?1:0)-(key.KeyS?1:0);
+  const strafe=(key.KeyD?1:0)-(key.KeyA?1:0);
+  if(forward||strafe){
+    const mag=Math.hypot(forward,strafe);
+    const speed=5.5*dt/mag;
+    P.pos.x+=(-Math.sin(P.yaw)*forward+Math.cos(P.yaw)*strafe)*speed;
+    P.pos.z+=(-Math.cos(P.yaw)*forward-Math.sin(P.yaw)*strafe)*speed;
+  }
+  const kx=(key.ArrowRight?1:0)-(key.ArrowLeft?1:0),ky=(key.ArrowUp?1:0)-(key.ArrowDown?1:0);
+  if(!act[0]&&!act[1]){P.yaw-=kx*2*dt;P.pitch=Math.max(-1.4,Math.min(1.4,P.pitch+ky*2*dt))}
+  for(let k=0;k<2;k++)if(act[k]){
+    P.a[k]=Math.max(-1.4,Math.min(1.6,P.a[k]+ky*5*dt));
+    P.b[k]=Math.max(-0.3,Math.min(1.5,P.b[k]+kx*5*dt*(k?1:-1)));
+  }
+  P.g.group.rotation.y=P.yaw+PI;P.g.group.updateMatrixWorld(true);gq.copy(P.g.group.quaternion);
+  for(let k=0;k<2;k++)if(!act[k]&&!P.touch[k]){P.a[k]+=(0-P.a[k])*Math.min(1,6*dt);P.b[k]+=(0.15-P.b[k])*Math.min(1,6*dt)}
+  disp.set(0,0,0);let touching=false;const off=[V(),V()],ow=[V(),V()];
+  for(let k=0;k<2;k++){
+    armOffset(P.g,k,P.a[k],P.b[k],off[k]);ow[k].copy(off[k]).applyQuaternion(gq);
+    _p.copy(P.prev[k]).applyQuaternion(gq);_dl.subVectors(ow[k],_p);
+    const wx=P.pos.x+ow[k].x,wy=P.pos.y+ow[k].y,wz=P.pos.z+ow[k].z,h=hgt(wx,wz);
+    if(wy-RH<h+0.03){disp.sub(_dl);touching=true;P.touch[k]=true}else P.touch[k]=false;
+    P.prev[k].copy(off[k]);
+  }
+  if(touching){
+    P.pos.add(disp);
+    for(let k=0;k<2;k++)if(P.touch[k]){const wy=P.pos.y+ow[k].y,h=hgt(P.pos.x+ow[k].x,P.pos.z+ow[k].z);if(wy-RH<h)P.pos.y+=h+RH-wy}
+    P.hist.push(disp.clone().divideScalar(dt));if(P.hist.length>5)P.hist.shift();
+    P.vel.set(0,0,0);P.hist.forEach(v=>P.vel.add(v));P.vel.divideScalar(P.hist.length);
+    if(P.vel.length()>MAXV)P.vel.setLength(MAXV);
+  }else{
+    if(P.was){P.vel.multiplyScalar(1.12);if(P.vel.length()>MAXV)P.vel.setLength(MAXV)}
+    P.hist=[];P.vel.y-=GRAV*dt;P.pos.addScaledVector(P.vel,dt);
+  }
+  P.was=touching;
+  const h=hgt(P.pos.x,P.pos.z);
+  if(P.pos.y-R<h){P.pos.y=h+R;if(P.vel.y<0)P.vel.y=0;if(!touching){const f=Math.max(0,1-5*dt);P.vel.x*=f;P.vel.z*=f}}
+  if(Math.abs(P.pos.x)>68){P.pos.x=Math.sign(P.pos.x)*68;P.vel.x=0}
+  if(Math.abs(P.pos.z)>68){P.pos.z=Math.sign(P.pos.z)*68;P.vel.z=0}
+  P.g.group.position.copy(P.pos);P.g.group.updateMatrixWorld(true);
+  aim(P.g,0,P.a[0],P.b[0]);aim(P.g,1,P.a[1],P.b[1]);
+}
+// ---------- VR (WebXR): headset = body, controllers = hands ----------
+const VS=1.4; // VR world scale: makes your real arms reach the ground like a gorilla's
+const grips=[0,1].map(i=>{const g=renderer.xr.getControllerGrip(i);rig.add(g);return g});
+const byHand=[null,null],vrPrev=[null,null],tpOff=V(),_cq=new THREE.Quaternion(),_fw=V(),_rt=V(),_pole=V();
+let vrInit=false,vrBtn=false,vrStick=false,vrLS=false,vrLF=false,vrLY=false,hudT=0,tpYaw=0,vrYaw=0,headS=1;
+function setHead(sc){P.g.group.traverse(o=>{if(o.isBone&&/^Head/.test(o.name.replace(/[\s_]/g,'')))o.scale.setScalar(sc)})}
+[0,1].forEach(i=>{const c=renderer.xr.getController(i);rig.add(c);
+  c.addEventListener('connected',e=>{const hd=e.data.handedness==='left'?0:1;byHand[hd]={grip:grips[i],gp:e.data.gamepad};vrPrev[hd]=null});
+  c.addEventListener('disconnected',()=>{for(let k=0;k<2;k++)if(byHand[k]&&byHand[k].grip===grips[i]){byHand[k]=null;vrPrev[k]=null}})});
+renderer.xr.addEventListener('sessionstart',()=>{rig.scale.setScalar(VS);rig.position.set(P.pos.x,hgt(P.pos.x,P.pos.z)+0.5,P.pos.z);
+  P.vel.set(0,0,0);P.hist=[];setHead(1);headS=1;tpOff.set(0,0,0);vrInit=true;$('help').style.display='none'});
+renderer.xr.addEventListener('sessionend',()=>{rig.scale.setScalar(1);rig.position.set(0,0,0);rig.rotation.set(0,0,0);
+  setHead(1);tpOff.set(0,0,0);[0,1].forEach(k=>P.g.rig.upper[k].scale.set(1,1,1));reset();if(!locked)$('help').style.display='flex'});
+const _hd=V();
+// Track headset pitch on the avatar's head bone without tilting the torso.
+const _headBaseQ=P.g.rig.head.quaternion.clone(),_headWorldQ=new THREE.Quaternion(),_rigWorldQ=new THREE.Quaternion(),_headLocalQ=new THREE.Quaternion(),_headPitchQ=new THREE.Quaternion(),_headPitchAxis=V(1,0,0);
+function stepVR(dt){
+  rig.position.sub(tpOff);rig.updateMatrixWorld(true);const xc=renderer.xr.getCamera();
+  const head=()=>rig.localToWorld(_hd.copy(xc.position));
+  head();const pb=_hd.clone();pb.y-=0.5;
+  if(vrInit){rig.position.y+=hgt(pb.x,pb.z)+R-pb.y;vrInit=false;rig.updateMatrixWorld(true);head();pb.copy(_hd);pb.y-=0.5}
+  const hp=_hd.clone(),disp=V(),w=[null,null];let touching=false;
+  for(let k=0;k<2;k++){
+    P.touch[k]=false;const bh=byHand[k];if(!bh){vrPrev[k]=null;continue}
+    w[k]=rig.localToWorld(bh.grip.position.clone());const ow=w[k].clone().sub(hp);
+    if(!vrPrev[k])vrPrev[k]=ow.clone();
+    const h=hgt(w[k].x,w[k].z);
+    if(w[k].y-RH<h+0.03){disp.sub(ow.clone().sub(vrPrev[k]));touching=true;P.touch[k]=true}
+    vrPrev[k].copy(ow);
+  }
+  const mv=V();
+  if(touching){
+    mv.copy(disp);
+    for(let k=0;k<2;k++)if(P.touch[k]){const wy=w[k].y+mv.y,h=hgt(w[k].x+mv.x,w[k].z+mv.z);if(wy-RH<h)mv.y+=h+RH-wy}
+    P.hist.push(mv.clone().divideScalar(dt));if(P.hist.length>5)P.hist.shift();
+    P.vel.set(0,0,0);P.hist.forEach(v=>P.vel.add(v));P.vel.divideScalar(P.hist.length);
+    if(P.vel.length()>MAXV)P.vel.setLength(MAXV);
+  }else{
+    if(P.was){P.vel.multiplyScalar(1.12);if(P.vel.length()>MAXV)P.vel.setLength(MAXV)}
+    P.hist=[];P.vel.y-=GRAV*dt;mv.copy(P.vel).multiplyScalar(dt);
+  }
+  P.was=touching;
+  const pn=pb.clone().add(mv),h=hgt(pn.x,pn.z);
+  if(pn.y-R<h){mv.y+=h+R-pn.y;if(P.vel.y<0)P.vel.y=0;if(!touching){const f=Math.max(0,1-5*dt);P.vel.x*=f;P.vel.z*=f}}
+  pn.copy(pb).add(mv);
+  if(Math.abs(pn.x)>68){mv.x+=Math.sign(pn.x)*68-pn.x;P.vel.x=0}
+  if(Math.abs(pn.z)>68){mv.z+=Math.sign(pn.z)*68-pn.z;P.vel.z=0}
+  rig.position.add(mv);P.pos.copy(pb).add(mv);
+  const gg=P.g.group;
+  // Keep the body upright and facing the headset's yaw; apply looking up/down only to the head bone.
+  xc.getWorldQuaternion(_headWorldQ);
+  rig.getWorldQuaternion(_rigWorldQ);
+  _headLocalQ.copy(_rigWorldQ).invert().multiply(_headWorldQ);
+  _eu.setFromQuaternion(_headLocalQ,'YXZ');
+  const headPitch=Math.max(-1.0,Math.min(1.0,_eu.x));
+  vrYaw=_eu.y;
+  _fw.set(-Math.sin(vrYaw),0,-Math.cos(vrYaw));_rt.set(Math.cos(vrYaw),0,-Math.sin(vrYaw));
+  gg.position.copy(P.pos).addScaledVector(_fw,-0.28);gg.rotation.y=vrYaw+PI;
+  P.g.rig.head.quaternion.copy(_headBaseQ).multiply(_headPitchQ.setFromAxisAngle(_headPitchAxis,-headPitch));
+  gg.updateMatrixWorld(true);
+  for(let k=0;k<2;k++)if(w[k]){
+    _pole.set(0,-0.6,0).addScaledVector(_rt,k?0.6:-0.6).addScaledVector(_fw,-0.5);
+    ik(P.g,k,w[k].add(mv),_pole);handRot(P.g,k,byHand[k].grip.getWorldQuaternion(_cq));
+  }
+  // any face button (A/B/X/Y) = respawn
+  const bp=(k,i)=>{const gp=byHand[k]&&byHand[k].gp;return !!(gp&&gp.buttons[i]&&gp.buttons[i].pressed)};
+  const pr=bp(1,4)||bp(1,5),lS=bp(0,3),lF=bp(0,4),lY=bp(0,5);
+  if(lS&&!vrLS)cycleHat(1);if(lF&&!vrLF)cycleCol(1);if(lY&&!vrLY)cycleFur();vrLS=lS;vrLF=lF;vrLY=lY;
+  if(pr&&!vrBtn){rig.position.set(0,hgt(0,0)+0.5,0);P.vel.set(0,0,0);vrInit=true}vrBtn=pr;
+  const gp1=byHand[1]&&byHand[1].gp,st=!!(gp1&&gp1.buttons[3]&&gp1.buttons[3].pressed);if(st&&!vrStick)P.third=!P.third;vrStick=st;
+  if(P.third){tpYaw+=Math.atan2(Math.sin(vrYaw-tpYaw),Math.cos(vrYaw-tpYaw))*Math.min(1,1.5*dt);tpOff.set(Math.sin(tpYaw)*2.4,0.7,Math.cos(tpYaw)*2.4)}
+  else{tpOff.set(0,0,0);tpYaw=vrYaw}
+  rig.position.add(tpOff);
+}
+const clock=new THREE.Clock();let t=0;
+renderer.setAnimationLoop(()=>{
+  const dt=Math.min(clock.getDelta(),1/30);t+=dt;
+  if(renderer.xr.isPresenting)stepVR(dt);else stepPlayer(dt);
+  if(P.g.spin)P.g.spin.rotation.y+=dt*25;
+  furTick(t);stepRemotes(dt);netTick(dt);
+  const f=V(-Math.sin(P.yaw),0,-Math.cos(P.yaw));
+  if(renderer.xr.isPresenting){}
+  else if(P.third){cam.position.copy(P.pos).addScaledVector(f,-3.2).add(V(0,1.4,0));cam.lookAt(P.pos)}
+  else{cam.position.copy(P.g.group.localToWorld(V(0,0.5,0.28)));cam.rotation.set(P.pitch,P.yaw,0,'YXZ')}
+  $('sub').textContent=`Speed: ${P.vel.length().toFixed(1)} m/s`;
+  renderer.render(scene,cam);
+});
+</script></body></html>
