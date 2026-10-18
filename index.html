@@ -24,8 +24,10 @@ canvas{display:block}
 #mp #micbtn.on,#mp #hearbtn.on,#mp #sfxbtn.on{background:#9fe3a0;color:#000}
 #mp select{padding:4px 6px;border-radius:6px;border:0;font-size:14px}
 #mp #gmnote{font-size:12px;color:#ffd54a;line-height:1.3;margin-bottom:4px}
+#btstatus{position:fixed;left:12px;bottom:12px;max-width:min(440px,calc(100vw - 24px));padding:8px 11px;border-radius:9px;background:#000b;color:#fff;font:13px/1.4 system-ui,sans-serif;z-index:20;pointer-events:none}
 </style></head><body>
 <div id="hud"><div id="state"></div><div id="sub"></div></div>
+<div id="btstatus">Body tracking: ready to test in Quest Browser</div>
 <div id="help"><div id="msg">Loading assets...</div></div>
 <script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
@@ -52,7 +54,10 @@ scene.add(new THREE.HemisphereLight(0xffffff,0x6a8a4a,1.2));
 const sun=new THREE.DirectionalLight(0xffffff,2.2);sun.position.set(50,100,30);scene.add(sun);
 const cam=new THREE.PerspectiveCamera(75,innerWidth/innerHeight,0.05,500);
 const rig=new THREE.Group();scene.add(rig);rig.add(cam);
-renderer.xr.enabled=true;document.body.appendChild(VRButton.createButton(renderer));
+renderer.xr.enabled=true;
+// Ask Quest Browser for its experimental WebXR Body Tracking feature when available.
+// Because this is optional, browsers without the feature can still start the game normally.
+document.body.appendChild(VRButton.createButton(renderer,{optionalFeatures:['local-floor','bounded-floor','hand-tracking','body-tracking']}));
 addEventListener('resize',()=>{renderer.setSize(innerWidth,innerHeight);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()});
 
 // ---------- load assets ----------
@@ -230,9 +235,9 @@ function makeGorilla(){
   const group=new THREE.Group(),model=clone(playerGltf.scene);group.add(model);scene.add(group);
   const rig={upper:[],lower:[],wrist:[],sh:[],len:[],lu:[],ll:[]};
   const meshes=[];
-  // New Playermodel.glb rig (Gorilla_IK_Rig): bones are named n17..n44.
-  // Index 0 = left arm (+X side), index 1 = right arm (-X side).
-  const BONES={upper:['n19','n32'],lower:['n20','n33'],wrist:['n21','n34'],head:'n44'};
+  // Player model's actual exported bone names.
+  // Index 0 = left arm, index 1 = right arm.
+  const BONES={upper:['Upper_Arm_L_12','Upper_Arm_R_6'],lower:['Lower_Arm_L_11','Lower_Arm_R_5'],wrist:['Wrist_L_10','Wrist_R_4'],head:'Head_0'};
   model.traverse(o=>{
     if(o.isMesh||o.isSkinnedMesh){o.frustumCulled=false;o.material=o.material.clone();meshes.push(o)}
     for(let k=0;k<2;k++){
@@ -822,6 +827,82 @@ function stepPlayer(dt){
   P.g.group.position.copy(P.pos);P.g.group.updateMatrixWorld(true);
   aim(P.g,0,P.a[0],P.b[0]);aim(P.g,1,P.a[1],P.b[1]);
 }
+// ---------- Experimental WebXR body tracking ----------
+// Quest Browser can expose XRFrame.body when its experimental WebXR body-tracking feature is enabled.
+// This renders the actual joint poses returned by the browser as a cyan skeleton for the first test.
+// The uploaded gorilla model only has arm + head bones, so this diagnostic skeleton deliberately does not
+// pretend to retarget missing torso/leg bones on that model.
+const BODY_JOINT_NAMES=[
+  'hips','spine-lower','spine-middle','spine-upper','chest','neck','head',
+  'left-shoulder','left-arm-upper','left-arm-lower','left-hand-wrist',
+  'right-shoulder','right-arm-upper','right-arm-lower','right-hand-wrist',
+  'left-upper-leg','left-lower-leg','left-foot-ankle','left-foot-ball',
+  'right-upper-leg','right-lower-leg','right-foot-ankle','right-foot-ball'
+];
+const BODY_LINKS=[
+  ['hips','spine-lower'],['spine-lower','spine-middle'],['spine-middle','spine-upper'],['spine-upper','chest'],['chest','neck'],['neck','head'],
+  ['chest','left-shoulder'],['left-shoulder','left-arm-upper'],['left-arm-upper','left-arm-lower'],['left-arm-lower','left-hand-wrist'],
+  ['chest','right-shoulder'],['right-shoulder','right-arm-upper'],['right-arm-upper','right-arm-lower'],['right-arm-lower','right-hand-wrist'],
+  ['hips','left-upper-leg'],['left-upper-leg','left-lower-leg'],['left-lower-leg','left-foot-ankle'],['left-foot-ankle','left-foot-ball'],
+  ['hips','right-upper-leg'],['right-upper-leg','right-lower-leg'],['right-lower-leg','right-foot-ankle'],['right-foot-ankle','right-foot-ball']
+];
+const bodyTrackingGroup=new THREE.Group();scene.add(bodyTrackingGroup);
+const bodyLineGeo=new THREE.BufferGeometry();
+const bodyLinePositions=new Float32Array(BODY_LINKS.length*6);
+bodyLineGeo.setAttribute('position',new THREE.BufferAttribute(bodyLinePositions,3));
+bodyLineGeo.setDrawRange(0,0);
+const bodyLines=new THREE.LineSegments(bodyLineGeo,new THREE.LineBasicMaterial({color:0x45f3ff,transparent:true,opacity:.95,depthTest:false}));
+bodyLines.frustumCulled=false;bodyLines.renderOrder=20;bodyTrackingGroup.add(bodyLines);
+const bodyPointGeo=new THREE.BufferGeometry();
+const bodyPointPositions=new Float32Array(BODY_JOINT_NAMES.length*3);
+bodyPointGeo.setAttribute('position',new THREE.BufferAttribute(bodyPointPositions,3));
+bodyPointGeo.setDrawRange(0,0);
+const bodyPoints=new THREE.Points(bodyPointGeo,new THREE.PointsMaterial({color:0xffffff,size:.045,sizeAttenuation:true,depthTest:false}));
+bodyPoints.frustumCulled=false;bodyPoints.renderOrder=21;bodyTrackingGroup.add(bodyPoints);
+const bodyJointMap=new Map();
+const bodyScratch=V();
+let bodyTrackingSeen=false,bodyTrackingFrames=0,bodyTrackingLastCount=0;
+function updateWebXRBodyTracking(xrFrame){
+  if(!renderer.xr.isPresenting||!xrFrame){bodyTrackingGroup.visible=false;return}
+  let body=null;
+  try{body=xrFrame.body||null}catch(e){body=null}
+  if(!body){
+    bodyTrackingFrames++;
+    if(!bodyTrackingSeen&&bodyTrackingFrames>60){$('btstatus').textContent='Body tracking unavailable — enable WebXR Experiments in Quest Browser, then reload.'}
+    bodyTrackingGroup.visible=false;return;
+  }
+  const refSpace=renderer.xr.getReferenceSpace();
+  if(!refSpace){bodyTrackingGroup.visible=false;return}
+  bodyTrackingSeen=true;bodyTrackingFrames=0;bodyJointMap.clear();
+  for(const name of BODY_JOINT_NAMES){
+    try{
+      const jointSpace=body.get(name);
+      const pose=jointSpace&&xrFrame.getPose(jointSpace,refSpace);
+      if(!pose||!pose.transform)continue;
+      const q=pose.transform.position;
+      const world=rig.localToWorld(bodyScratch.set(q.x,q.y,q.z)).clone();
+      bodyJointMap.set(name,world);
+    }catch(e){/* Experimental API implementations can omit individual joints. */}
+  }
+  let pointCount=0;
+  for(const name of BODY_JOINT_NAMES){
+    const pos=bodyJointMap.get(name);if(!pos)continue;
+    bodyPointPositions[pointCount*3]=pos.x;bodyPointPositions[pointCount*3+1]=pos.y;bodyPointPositions[pointCount*3+2]=pos.z;pointCount++;
+  }
+  let lineCount=0;
+  for(const [aName,bName] of BODY_LINKS){
+    const a=bodyJointMap.get(aName),b=bodyJointMap.get(bName);if(!a||!b)continue;
+    const o=lineCount*6;
+    bodyLinePositions[o]=a.x;bodyLinePositions[o+1]=a.y;bodyLinePositions[o+2]=a.z;
+    bodyLinePositions[o+3]=b.x;bodyLinePositions[o+4]=b.y;bodyLinePositions[o+5]=b.z;lineCount++;
+  }
+  bodyPointGeo.attributes.position.needsUpdate=true;bodyPointGeo.setDrawRange(0,pointCount);
+  bodyLineGeo.attributes.position.needsUpdate=true;bodyLineGeo.setDrawRange(0,lineCount*2);
+  bodyTrackingGroup.visible=pointCount>0;
+  bodyTrackingLastCount=pointCount;
+  $('btstatus').textContent=pointCount?`Body tracking: ACTIVE · ${pointCount} joints received`:'Body tracking requested, waiting for valid joint poses…';
+}
+
 // ---------- VR (WebXR): headset = body, controllers = hands ----------
 const VS=1.4; // VR world scale: makes your real arms reach the ground like a gorilla's
 const grips=[0,1].map(i=>{const g=renderer.xr.getControllerGrip(i);rig.add(g);return g});
@@ -833,7 +914,7 @@ function setHead(sc){P.g.rig.head.scale.setScalar(sc)} // new rig: head bone is 
   c.addEventListener('disconnected',()=>{for(let k=0;k<2;k++)if(byHand[k]&&byHand[k].grip===grips[i]){byHand[k]=null;vrPrev[k]=null}})});
 renderer.xr.addEventListener('sessionstart',()=>{rig.scale.setScalar(VS*SIZE);rig.position.set(P.pos.x,hgt(P.pos.x,P.pos.z)+0.5*SIZE,P.pos.z);
   P.vel.set(0,0,0);P.hist=[];P.g.group.scale.setScalar(SIZE);setHead(1);headS=1;tpOff.set(0,0,0);vrInit=true;$('help').style.display='none'});
-renderer.xr.addEventListener('sessionend',()=>{rig.scale.setScalar(1);rig.position.set(0,0,0);rig.rotation.set(0,0,0);
+renderer.xr.addEventListener('sessionend',()=>{$('btstatus').textContent='Body tracking: session ended';bodyTrackingGroup.visible=false;rig.scale.setScalar(1);rig.position.set(0,0,0);rig.rotation.set(0,0,0);
   setHead(1);P.g.rig.head.quaternion.copy(_headBaseQ);tpOff.set(0,0,0);[0,1].forEach(k=>P.g.rig.upper[k].scale.set(1,1,1));reset();if(!locked)$('help').style.display='flex'});
 const _hd=V();
 // Track headset pitch on the avatar's head bone without tilting the torso.
@@ -1260,9 +1341,10 @@ camTick=function(dt){
 }
 
 const clock=new THREE.Clock();let t=0;
-renderer.setAnimationLoop(()=>{
+renderer.setAnimationLoop((timestamp,xrFrame)=>{
   const dt=Math.min(clock.getDelta(),1/30);t+=dt;
   if(renderer.xr.isPresenting)stepVR(dt);else stepPlayer(dt);
+  updateWebXRBodyTracking(xrFrame);
   if(P.g.spin)P.g.spin.rotation.y+=dt*25;
   furTick(t);stepRemotes(dt);netTick(dt);gameTick(dt);voiceTick();vrMenuTick(dt);camTick(dt);
   const f=V(-Math.sin(P.yaw),0,-Math.cos(P.yaw));
