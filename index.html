@@ -237,7 +237,7 @@ function makeGorilla(){
   const meshes=[];
   // Player model's actual exported bone names.
   // Index 0 = left arm, index 1 = right arm.
-  const BONES={upper:['Upper_Arm_L_12','Upper_Arm_R_6'],lower:['Lower_Arm_L_11','Lower_Arm_R_5'],wrist:['Wrist_L_10','Wrist_R_4'],head:'Head_0'};
+  const BONES={upper:['n19','n32'],lower:['n20','n33'],wrist:['n21','n34'],head:'n44'};
   model.traverse(o=>{
     if(o.isMesh||o.isSkinnedMesh){o.frustumCulled=false;o.material=o.material.clone();meshes.push(o)}
     for(let k=0;k<2;k++){
